@@ -14,6 +14,7 @@ cpal = "0.15.2"
 windows-volume-control = "0.1.1"
 windows = { version = "0.52.0", features = ["Win32_Media_Audio", "Win32_System_Com", "Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
 raw-window-handle = "0.5.0"
+winapi = { version = "0.3.9", features = ["winuser", "windef", "minwindef", "shellapi", "combaseapi", "objbase", "mmdeviceapi", "propkeydef", "winerror", "guiddef", "wtypes"] }
 
 # This tells Rust to build a Windows GUI app (no console window)
 [target.'cfg(windows)'.build-dependencies]

@@ -135,50 +135,106 @@ impl AudioApp {
         self.set_default_device_by_name(&device_name);
     }
 
+    // Refresh the list of audio devices
+    fn refresh_devices(&mut self) {
+        // Get audio devices
+        let host = cpal::default_host();
+        let mut device_names = Vec::new();
+
+        // Get output devices
+        if let Ok(devices) = host.output_devices() {
+            for device in devices {
+                if let Ok(name) = device.name() {
+                    device_names.push(name);
+                }
+            }
+        }
+
+        // Update the device list
+        self.device_names = device_names;
+
+        // Reset selected device if it's no longer valid
+        if let Some(idx) = self.selected_device_idx {
+            if idx >= self.device_names.len() {
+                self.selected_device_idx = None;
+            }
+        }
+    }
+
     // Set the default audio device in Windows by name
     fn set_default_device_by_name(&mut self, device_name: &str) {
-        // Use PowerShell to set the default audio device
         #[cfg(target_os = "windows")]
         {
-            use std::process::Command;
-
-            // Try multiple approaches to set the default audio device
-
-            // Approach 1: Using AudioDeviceCmdlets module (if installed)
-            let ps_command1 = format!(
-                "if (Get-Command Get-AudioDevice -ErrorAction SilentlyContinue) {{ \
-                 Get-AudioDevice -List | Where-Object {{ $_.Name -eq '{}' }} | Set-AudioDevice \
-                 }}",
-                device_name.replace("'", "''") // Escape single quotes for PowerShell
-            );
-
-            // Approach 2: Using SoundVolumeView (if available)
-            let ps_command2 = format!(
-                "if (Test-Path 'C:\\Windows\\SoundVolumeView.exe') {{ \
-                 C:\\Windows\\SoundVolumeView.exe /SetDefault \"{}\" all \
-                 }}",
-                device_name.replace("\"", "\\\"") // Escape quotes
-            );
-
-            // Approach 3: Using Windows API directly
-            let ps_command3 = format!(
-                "$devices = Get-WmiObject -Class Win32_SoundDevice; \
-                 foreach ($device in $devices) {{ \
-                 if ($device.Name -like '*{}*') {{ \
-                 $device.SetDefault() \
-                 }} \
-                 }}",
-                device_name.replace("'", "''")
-            );
-
-            // Combine all approaches
-            let full_command = format!("{} ; {} ; {}", ps_command1, ps_command2, ps_command3);
-
-            // Try to run the command
-            let _ = Command::new("powershell")
-                .args(&["-Command", &full_command])
-                .spawn();
+            // First try using the Windows API directly through winapi
+            if let Err(_) = self.set_default_device_winapi(device_name) {
+                // Fall back to PowerShell if the direct approach fails
+                self.set_default_device_powershell(device_name);
+            }
         }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn set_default_device_winapi(&self, device_name: &str) -> Result<(), &'static str> {
+        use winapi::um::objbase::CoInitialize;
+        use std::ptr;
+
+        // Since implementing the full COM interface for audio device management is complex,
+        // we'll just initialize COM and then fall back to PowerShell for simplicity
+        unsafe {
+            // Initialize COM
+            CoInitialize(ptr::null_mut());
+
+            // For a full implementation, we would:
+            // 1. Create an MMDeviceEnumerator
+            // 2. Enumerate audio endpoints
+            // 3. Find the device by name
+            // 4. Set it as the default device
+
+            // But for simplicity, we'll just return an error to fall back to PowerShell
+            Err("Using PowerShell fallback")
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn set_default_device_powershell(&self, device_name: &str) {
+        use std::process::Command;
+
+        // Try multiple approaches to set the default audio device
+
+        // Approach 1: Using AudioDeviceCmdlets module (if installed)
+        let ps_command1 = format!(
+            "if (Get-Command Get-AudioDevice -ErrorAction SilentlyContinue) {{ \
+             Get-AudioDevice -List | Where-Object {{ $_.Name -eq '{}' }} | Set-AudioDevice \
+             }}",
+            device_name.replace("'", "''") // Escape single quotes for PowerShell
+        );
+
+        // Approach 2: Using SoundVolumeView (if available)
+        let ps_command2 = format!(
+            "if (Test-Path 'C:\\Windows\\SoundVolumeView.exe') {{ \
+             C:\\Windows\\SoundVolumeView.exe /SetDefault \"{}\" all \
+             }}",
+            device_name.replace("\"", "\\\"") // Escape quotes
+        );
+
+        // Approach 3: Using Windows API directly through PowerShell
+        let ps_command3 = format!(
+            "$devices = Get-WmiObject -Class Win32_SoundDevice; \
+             foreach ($device in $devices) {{ \
+             if ($device.Name -like '*{}*') {{ \
+             $device.SetDefault() \
+             }} \
+             }}",
+            device_name.replace("'", "''")
+        );
+
+        // Combine all approaches
+        let full_command = format!("{} ; {} ; {}", ps_command1, ps_command2, ps_command3);
+
+        // Try to run the command
+        let _ = Command::new("powershell")
+            .args(&["-Command", &full_command])
+            .spawn();
     }
 }
 
@@ -195,7 +251,6 @@ impl FrameExt for eframe::Frame {
             // This is a simplified approach - in a real app, we'd use raw_window_handle
             // but for this demo we'll use a simpler approach
             use std::ptr;
-            use winapi::shared::windef::HWND;
             use winapi::um::winuser::GetForegroundWindow;
 
             unsafe {
@@ -267,6 +322,19 @@ impl eframe::App for AudioApp {
                                     }
                                 }
                             }
+
+                            // Add some space between buttons
+                            ui.add_space(10.0);
+
+                            // Refresh button - update the device list
+                            if ui.add(egui::Button::new(RichText::new("🔄").size(16.0))
+                                .min_size(egui::vec2(24.0, 24.0))
+                                .fill(ui.visuals().widgets.active.bg_fill))
+                                .clicked()
+                            {
+                                // Refresh the device list
+                                self.refresh_devices();
+                            }
                         });
                     });
                 }).response;
@@ -292,15 +360,15 @@ impl eframe::App for AudioApp {
                         // Track if a device was selected
                         let mut selected_device = None;
 
-                        // Make the combo box take the full width
+                        // Make the combo box take the full width with better visibility
                         let combo = egui::ComboBox::from_label("")
                             .selected_text(
                                 self.selected_device_idx
                                     .map(|idx| {
                                         // Truncate long device names for display
                                         let name = self.device_names[idx].clone();
-                                        if name.len() > 30 {
-                                            format!("{}...", &name[0..27])
+                                        if name.len() > 25 {
+                                            format!("{}...", &name[0..22])
                                         } else {
                                             name
                                         }
@@ -308,11 +376,12 @@ impl eframe::App for AudioApp {
                                     .unwrap_or_else(|| "Select a device".to_string()),
                             )
                             .width(ui.available_width()) // Use full width
-                            .height(200.0); // Set a maximum height for the dropdown
+                            .height(250.0) // Increase maximum height for the dropdown
+                            .wrap(false); // Prevent text wrapping in dropdown
 
                         combo.show_ui(ui, |ui| {
                             // Add a scrolling area for many devices
-                            egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+                            egui::ScrollArea::vertical().max_height(250.0).show(ui, |ui| {
                                 for (idx, name) in self.device_names.iter().enumerate() {
                                     let response = ui.selectable_value(&mut self.selected_device_idx, Some(idx), name);
 
@@ -372,15 +441,23 @@ impl eframe::App for AudioApp {
                         // Create a frame for the slider to make it more visible
                         let slider_frame = egui::Frame::none()
                             .fill(ui.visuals().widgets.inactive.bg_fill)
-                            .inner_margin(egui::style::Margin::same(8.0))
-                            .rounding(egui::Rounding::same(4.0))
+                            .inner_margin(egui::style::Margin::same(12.0)) // Increased padding
+                            .rounding(egui::Rounding::same(6.0)) // Increased rounding
+                            .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color)) // Add border
                             .show(ui, |ui| {
-                                let volume_response = ui.add(
+                                // Add some extra space for better visibility
+                                ui.add_space(4.0);
+
+                                // Make the slider larger and more visible
+                                let volume_response = ui.add_sized(
+                                    [ui.available_width(), 30.0], // Make the slider taller
                                     Slider::new(&mut self.volume, 0.0..=1.0)
                                         .text("Volume")
                                         .show_value(false)
                                         .trailing_fill(true) // Fill the slider to show current level
                                 );
+
+                                ui.add_space(4.0);
                                 volume_response
                             }).inner;
 
@@ -401,7 +478,7 @@ impl eframe::App for AudioApp {
 fn main() {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([400.0, 280.0])  // Much larger size to ensure all content is visible
+            .with_inner_size([500.0, 350.0])  // Much larger size to ensure all content is visible
             .with_always_on_top()
             .with_decorations(false)  // No default window decorations
             .with_transparent(false)
